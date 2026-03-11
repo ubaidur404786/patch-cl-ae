@@ -22,20 +22,32 @@
 
 ### 1.1 What Are We Looking At?
 
-Brain tumors are abnormal growths of cells inside the skull. Magnetic Resonance Imaging (MRI) produces detailed cross-sectional images of the brain, and radiologists examine these scans daily to detect, classify, and monitor tumors. The dataset we use — the **Kaggle Brain Tumor MRI Dataset** (Masoud Nickparvar) — contains four classes of MRI scans:
+A **brain tumor** is an abnormal growth of cells inside the skull. Because the skull is rigid, any extra growth can cause pressure or damage to the brain. Doctors use **MRI (Magnetic Resonance Imaging)**—a machine that uses magnets and radio waves—to take detailed "slices" or pictures of the brain to find these growths.
+
+The dataset we use—the **Kaggle Brain Tumor MRI Dataset** (Masoud Nickparvar)—contains four categories of scans. In our project, the model only "learns" from the healthy scans so it can get really good at spotting anything that looks "weird" or "abnormal."
 
 | | | | |
 |:---:|:---:|:---:|:---:|
 | ![No Tumor](report_images/Tr-no_3_no_tumor.jpg) | ![Glioma](report_images/Tr-gl_5_glioma.jpg) | ![Meningioma](report_images/Tr-aug-me_1_meningioma.jpg) | ![Pituitary](report_images/Tr-pi_140_pituitary.jpg) |
 | **No Tumor** (Normal) | **Glioma** | **Meningioma** | **Pituitary** |
 
-**No Tumor (Normal):** A healthy brain scan. The tissue is symmetrical, the ventricles are regular, and there is no visible mass or distortion. These are the *only* images our model ever sees during training.
+**No Tumor (Normal):** A healthy brain scan. The tissue is **symmetrical** (the left side looks like a mirror of the right side), and there is no visible mass or distortion. These are the *only* images our model ever sees during training. It learns what "perfection" looks like so it can spot mistakes later.
 
-**Glioma:** The most common — and often the most aggressive — primary brain tumor. Gliomas arise from glial cells, which support and nourish neurons. In MRI scans they frequently appear as irregularly shaped, diffuse masses that infiltrate surrounding tissue, often accompanied by edema (swelling). Their borders tend to be poorly defined, making them particularly challenging to delineate even for experienced radiologists.
+**Glioma:** One of the most common and aggressive types of brain tumors. Gliomas often look like messy, blurry clouds. They **infiltrate** (spread into) the healthy brain tissue around them. In MRI scans, they appear as irregular shapes that are often accompanied by **edema** (swelling). Their borders are usually poorly defined, making them hard to trace.
 
-**Meningioma:** These tumors develop from the meninges, the protective membranes surrounding the brain and spinal cord. On MRI, meningiomas typically present as well-circumscribed, extra-axial (outside the brain parenchyma) masses with a broad dural base. They are usually benign and slow-growing, but their location near critical structures can make them clinically significant.
+**Meningioma:** These tumors grow from the *meninges* (the protective layers that wrap around the brain). They usually look like very solid, well-defined circles or lumps. They are **well-circumscribed**, meaning they have a clear edge and stay "outside" the main brain tissue while pushing against it as they grow.
 
-**Pituitary tumor:** A growth in or near the pituitary gland at the base of the brain. Pituitary tumors are often small, well-defined, and located centrally in the sella turcica. They can cause hormonal imbalances and visual disturbances. On MRI they appear as focal lesions that are distinct from the surrounding normal pituitary tissue.
+**Pituitary tumor:** A growth at the very bottom center of the brain near the pituitary gland (which controls your hormones). They appear as bright, **focal lesions** (small, specific spots) located centrally. Even if they are small, they can cause big problems like visual disturbances because they sit near the nerves for your eyes.
+
+---
+
+###  Beginner's Medical Glossary
+*   **Symmetrical:** When two halves of something are identical mirrors of each other.
+*   **Infiltrate:** To soak into or spread through healthy tissue (like ink spreading on a paper towel).
+*   **Edema:** The medical term for **swelling** caused by extra fluid.
+*   **Well-circumscribed:** Having a very clear, neat edge or border (easy to draw a line around).
+*   **Lesion:** A general word for any area of damaged or abnormal tissue (like a tumor or wound).
+*   **Focal:** Limited to one specific, small area.
 
 ### 1.2 The Machine Learning Challenge
 
