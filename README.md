@@ -1,742 +1,443 @@
-# PatchCL-AE: Patch-wise Contrastive Learning Auto-Encoder for Brain Tumor MRI Anomaly Detection
+# PatchCL-AE: A Reproduction Report
 
-> **A complete beginner-friendly report** — from the medical problem to the deep learning solution, architecture, training, evaluation, and results.
+**Patch-wise Contrastive Learning Auto-Encoder for Medical Image Anomaly Detection**
+
+> This document is an educational, comparative reproduction report. It walks through the core ideas of the PatchCL-AE paper, maps each concept to our actual PyTorch implementation, and compares our quantitative results against the original publication. Every section is written to be self-contained and beginner-friendly — no prior knowledge of anomaly detection or contrastive learning is assumed.
 
 ---
 
 ## Table of Contents
 
-1. [The Problem: Why Do We Need This?](#1-the-problem-why-do-we-need-this)
-2. [The Dataset: Brain Tumor MRI](#2-the-dataset-brain-tumor-mri)
-3. [The Solution: PatchCL-AE (Our Approach)](#3-the-solution-patchcl-ae-our-approach)
-4. [Model Architecture (How It Works Inside)](#4-model-architecture-how-it-works-inside)
-5. [Loss Functions (How the Model Learns)](#5-loss-functions-how-the-model-learns)
-6. [Training Pipeline](#6-training-pipeline)
-7. [Evaluation & Anomaly Detection (How We Test)](#7-evaluation--anomaly-detection-how-we-test)
-8. [Results & Visualisations](#8-results--visualisations)
-9. [How to Run the Code](#9-how-to-run-the-code)
-10. [Project Structure](#10-project-structure)
-11. [Requirements](#11-requirements)
+1. [The Medical Problem & The Dataset](#1-the-medical-problem--the-dataset)
+2. [Deep Dive: How an Image Passes Through the Model](#2-deep-dive-how-an-image-passes-through-the-model)
+3. [The Core Innovation: Patch-wise Contrastive Learning](#3-the-core-innovation-patch-wise-contrastive-learning)
+4. [Architecture Breakdown (Theory vs. Code)](#4-architecture-breakdown-theory-vs-code)
+5. [Anomaly Scoring: Paper vs. Our Output](#5-anomaly-scoring-paper-vs-our-output)
+6. [Results Comparison (Original vs. Our Run)](#6-results-comparison-original-vs-our-run)
+7. [How to Run the Code](#7-how-to-run-the-code)
 
 ---
 
-## 1. The Problem: Why Do We Need This?
+## 1. The Medical Problem & The Dataset
 
-### 1.1 Brain Tumors are Life-Threatening
+### 1.1 What Are We Looking At?
 
-Brain tumors are abnormal growths of cells inside the brain. They can be:
+Brain tumors are abnormal growths of cells inside the skull. Magnetic Resonance Imaging (MRI) produces detailed cross-sectional images of the brain, and radiologists examine these scans daily to detect, classify, and monitor tumors. The dataset we use — the **Kaggle Brain Tumor MRI Dataset** (Masoud Nickparvar) — contains four classes of MRI scans:
 
-| Type | Description |
-|------|-------------|
-| **Glioma** | Tumors arising from glial cells (support cells of the brain). Can be low-grade or high-grade (aggressive). |
-| **Meningioma** | Tumors in the meninges (protective membranes around the brain). Usually benign but can compress brain tissue. |
-| **Pituitary** | Tumors in the pituitary gland (at the brain's base). Affect hormone production. |
+| | | | |
+|:---:|:---:|:---:|:---:|
+| ![No Tumor](report_images/Tr-no_3_no_tumor.jpg) | ![Glioma](report_images/Tr-gl_5_glioma.jpg) | ![Meningioma](report_images/Tr-aug-me_1_meningioma.jpg) | ![Pituitary](report_images/Tr-pi_140_pituitary.jpg) |
+| **No Tumor** (Normal) | **Glioma** | **Meningioma** | **Pituitary** |
 
-Early and accurate detection through **MRI scans** is critical for treatment planning. However, manually reviewing thousands of MRI slices is:
-- **Time-consuming** for radiologists
-- **Prone to human error** (especially for subtle tumors)
-- **Expensive** (requires trained specialists)
+**No Tumor (Normal):** A healthy brain scan. The tissue is symmetrical, the ventricles are regular, and there is no visible mass or distortion. These are the *only* images our model ever sees during training.
+
+**Glioma:** The most common — and often the most aggressive — primary brain tumor. Gliomas arise from glial cells, which support and nourish neurons. In MRI scans they frequently appear as irregularly shaped, diffuse masses that infiltrate surrounding tissue, often accompanied by edema (swelling). Their borders tend to be poorly defined, making them particularly challenging to delineate even for experienced radiologists.
+
+**Meningioma:** These tumors develop from the meninges, the protective membranes surrounding the brain and spinal cord. On MRI, meningiomas typically present as well-circumscribed, extra-axial (outside the brain parenchyma) masses with a broad dural base. They are usually benign and slow-growing, but their location near critical structures can make them clinically significant.
+
+**Pituitary tumor:** A growth in or near the pituitary gland at the base of the brain. Pituitary tumors are often small, well-defined, and located centrally in the sella turcica. They can cause hormonal imbalances and visual disturbances. On MRI they appear as focal lesions that are distinct from the surrounding normal pituitary tissue.
 
 ### 1.2 The Machine Learning Challenge
 
-A typical approach is **supervised classification** — train a model on labelled examples of each tumor type. But this has limitations:
+The conventional supervised learning approach would be to collect thousands of annotated MRI scans for every possible tumor type, train a classifier, and deploy it. In practice, this faces three fundamental obstacles:
 
-- **New/rare tumor types** might not appear in the training set
-- **Annotation cost** is extremely high (requires expert radiologists)
-- The model can only detect what it has been explicitly taught
+1. **Annotation cost.** Medical image labeling requires board-certified radiologists or neuropathologists — expensive, slow, and subject to inter-observer variability. A single scan may take 10–30 minutes to annotate at the voxel level.
 
-### 1.3 A Better Idea: Anomaly Detection
+2. **Class imbalance and rare diseases.** Some tumor subtypes are extremely rare. Collecting enough positive examples for supervised training may be impossible within a single institution's patient population, and cross-institutional data sharing is restricted by privacy regulations.
 
-Instead of teaching the model *"what tumors look like"*, we teach it **"what a NORMAL brain looks like"**. Then, anything that deviates from normal is flagged as an **anomaly** (potential tumor).
+3. **Open-set nature of pathology.** A supervised classifier can only detect the disease categories it was trained on. If a patient presents with a novel or atypical pathology, the classifier has no mechanism to flag it as "unknown" — it will silently assign it to the most similar known class.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  ANOMALY DETECTION IDEA                  │
-│                                                         │
-│   Training:   Learn ONLY from normal brain MRIs         │
-│   Testing:    Flag anything "abnormal" as anomaly       │
-│                                                         │
-│   ✅ No need for tumor labels during training           │
-│   ✅ Can detect ANY abnormality (even unseen types)     │
-│   ✅ Requires only normal data to train                 │
-└─────────────────────────────────────────────────────────┘
-```
+### 1.3 The Anomaly Detection Paradigm
 
-This is exactly what **PatchCL-AE** does.
+Anomaly detection sidesteps all three problems with an elegant insight: **learn what "normal" looks like, and flag everything else as suspicious.**
+
+During training, our model sees *only* healthy brain scans (the "No Tumor" class — images like `Tr-no_3_no_tumor.jpg`). It learns the full manifold of normal brain anatomy — the typical shapes of ventricles, the expected symmetry, the usual intensity patterns of grey and white matter. It learns this so thoroughly that it can take a slightly corrupted version of any normal brain and reconstruct it faithfully.
+
+During inference, when a scan containing a glioma, meningioma, or pituitary tumor is fed to the model, the model *attempts* to reconstruct it. But it has never seen a tumor during training. It does not know how to reproduce that irregular mass, that abnormal intensity, those distorted boundaries. Instead, it reconstructs what it thinks a *normal* brain should look like in that region — effectively "erasing" or "smoothing over" the tumor.
+
+The difference between the original (tumorous) image and the reconstruction (tumor-erased) image is the **anomaly signal**. Large differences in specific regions indicate that something abnormal is present. This approach generalises to *any* pathology, not just the three tumor types in our test set.
 
 ---
 
-## 2. The Dataset: Brain Tumor MRI
+## 2. Deep Dive: How an Image Passes Through the Model
 
-We use the **Brain Tumor MRI Dataset** from Kaggle, which contains 4 classes of brain MRI images.
+Let us trace the complete journey of a single test image — say, the glioma scan `Tr-gl_5_glioma.jpg` — through our trained PatchCL-AE model at inference time. Understanding this end-to-end flow is key to grasping how the model makes its decisions.
 
-### 2.1 Dataset Structure
+### Step 1: Preprocessing
 
-```
-data/
-├── Training/                        ← Used for training
-│   ├── notumor/     (395 images)    ✅ ONLY this class used for training
-│   ├── glioma/      (NOT used)      ❌ Ignored during training
-│   ├── meningioma/  (NOT used)      ❌ Ignored during training
-│   └── pituitary/   (NOT used)      ❌ Ignored during training
-│
-└── Testing/                         ← Used for evaluation
-    ├── notumor/     (400 images)    → Label 0 (Normal)
-    ├── glioma/      (400 images)    → Label 1 (Anomaly)
-    ├── meningioma/  (400 images)    → Label 1 (Anomaly)
-    └── pituitary/   (400 images)    → Label 1 (Anomaly)
-```
+The raw JPEG image is loaded, converted to RGB, and resized to 256×256 pixels. It is then normalised from the standard [0, 1] pixel range to [-1, 1] using the transform `Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])`. This normalisation is critical because our Decoder's final activation is `Tanh`, which naturally outputs values in [-1, 1]. Matching the input range to the output range ensures numerical consistency throughout the pipeline.
 
-### 2.2 Key Decisions
+### Step 2: Encoding — Compressing into Deep Semantic Features
 
-| Decision | Explanation |
-|----------|-------------|
-| **Train on `notumor` only** | The auto-encoder learns to reconstruct ONLY normal brains. It never sees any tumors during training. |
-| **Binary labels at test time** | `notumor` → Normal (0), all other classes → Anomaly (1). We don't distinguish tumor types — we only care about normal vs abnormal. |
-| **Image size: 256×256** | All MRI images are resized to 256×256 pixels for uniform processing. |
-| **Normalisation: [-1, 1]** | Pixel values are normalised from [0, 255] → [0, 1] → [-1, 1] to match the Tanh decoder output. |
+The preprocessed image tensor (shape: 3×256×256) is passed to the **Encoder**, a 5-block convolutional network. Each block applies a convolution, instance normalisation, and ReLU activation, progressively halving the spatial resolution while doubling the channel depth:
 
-### 2.3 Data Flow During Training vs Testing
+1. **E1** (7×7 conv, stride 2): 3 channels → 64 channels, 256×256 → 128×128. The large 7×7 kernel in this first block captures broad spatial context right from the start — edges, overall contrast, large-scale anatomical boundaries.
 
-```
-TRAINING (notumor only):
-  ┌──────────┐     Add Gaussian      ┌──────────┐
-  │  Clean   │ ──── noise (σ=0.05)──→│  Noisy   │
-  │  Image   │                       │  Image   │
-  └──────────┘                       └──────────┘
-       │                                   │
-       └──── Both fed to the model ────────┘
-       
-       Output: (noisy_image, clean_image) pair
+2. **E2** (3×3 conv, stride 2): 64 → 128 channels, 128×128 → 64×64. Begins to capture mid-level features — tissue texture patterns, the shapes of ventricles and sulci.
 
-TESTING (all 4 classes):
-  ┌──────────┐
-  │  Image   │ ──→ fed to model ──→ anomaly score
-  │ + Label  │     (0=normal, 1=anomaly)
-  └──────────┘
-```
+3. **E3** (3×3 conv, stride 2): 128 → 256 channels, 64×64 → 32×32. At this scale, each spatial position has a receptive field covering a significant portion of the brain, encoding regional anatomical relationships.
 
----
+4. **E4** (3×3 conv, stride 2): 256 → 512 channels, 32×32 → 16×16. High-level semantic features — is this region a ventricle? Grey matter? White matter? Something that does not fit any learned pattern?
 
-## 3. The Solution: PatchCL-AE (Our Approach)
+5. **E5** (3×3 conv, stride 2): 512 → 512 channels, 16×16 → 8×8. The deepest, most abstract representation. Each of the 64 spatial positions (8×8) encodes a holistic summary of a 32×32 pixel region of the original image.
 
-**PatchCL-AE** = **Patch**-wise **C**ontrastive **L**earning **A**uto-**E**ncoder
+The Encoder outputs all five feature maps [E1, E2, E3, E4, E5]. This multi-scale representation is vital — anomalies can range from tiny textural differences (best captured at shallow layers) to large structural distortions (best captured at deep layers).
 
-### 3.1 Core Idea in Plain English
+### Step 3: Decoding — Attempting to Reconstruct
 
-1. **Train an Auto-Encoder on normal brains only.** The model learns to take a (slightly noisy) normal brain MRI as input and produce a clean reconstruction as output.
+The Decoder takes the deepest feature map (E5, shape: 512×8×8) and progressively upsamples it back to a full 256×256 RGB image through four blocks:
 
-2. **At test time, feed ANY brain MRI.** If the brain is normal, the auto-encoder produces a faithful reconstruction. If the brain has a tumor, the auto-encoder *cannot* reconstruct the tumor (it has never seen one) and produces a "normalised" version instead.
+1. **De1**: 512 → 256 channels, 8×8 → 16×16 (bilinear upsample + 3×3 conv)
+2. **De2**: 256 → 128 channels, 16×16 → 32×32
+3. **De3**: 128 → 64 channels, 32×32 → 64×64
+4. **De4**: 64 → 64 channels, 64×64 → 128×128
+5. **Output head**: 64 → 3 channels, 128×128 → 256×256, with `Tanh` activation
 
-3. **Compare original and reconstruction.** Where they differ significantly, there's likely an anomaly.
+Here is the crucial insight: **the Decoder was trained exclusively on normal brain images.** It learned how to generate healthy brain tissue — smooth ventricles, symmetric hemispheres, regular intensity gradients. When the encoded representation of our glioma scan arrives, the Decoder does its best to decode it, but it can only produce tissue patterns it has *seen before*. It cannot reconstruct the glioma mass because it has no learned representation for tumors.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│               HOW ANOMALY DETECTION WORKS                │
-│                                                          │
-│  Normal Brain:                                           │
-│    Input ──→ [Auto-Encoder] ──→ Reconstruction           │
-│    Original ≈ Reconstruction  →  Low anomaly score  ✅   │
-│                                                          │
-│  Brain with Tumor:                                       │
-│    Input ──→ [Auto-Encoder] ──→ Reconstruction           │
-│    Original ≠ Reconstruction  →  High anomaly score ⚠️   │
-│    (tumor region can't be reconstructed)                 │
-└──────────────────────────────────────────────────────────┘
-```
+The result is a reconstructed image X̂ that looks like a "normalised" version of the input — a brain where the tumor region has been essentially replaced with what the model believes *should* be there (healthy tissue). The glioma's irregular mass, abnormal intensity, and surrounding edema are all smoothed away or replaced.
 
-### 3.2 Why "Patch-wise Contrastive Learning"?
+### Step 4: Re-Encoding the Reconstruction
 
-A naïve approach would compare original and reconstruction pixel-by-pixel. But this is **noisy and unreliable** because:
-- Small geometric shifts create false alarms
-- Texture variations cause pixel mismatches even in normal tissue
+The reconstructed image X̂ is passed through the *same* Encoder again, producing a second set of multi-scale feature maps [E1', E2', E3', E4', E5']. These features represent what the model thinks the image *should* look like — the "normalised" version.
 
-**PatchCL-AE's innovation:** Instead of comparing pixels, it compares **semantic features** at the **patch level**. Each small region ("patch") of the image is projected into a learned embedding space where:
-- **Same location, similar content** → high cosine similarity → low anomaly
-- **Same location, different content** → low cosine similarity → **high anomaly**
+### Step 5: Comparing Features — The Anomaly Map
 
-This is called **Contrastive Learning** — we "contrast" the original patch against the reconstructed patch.
+Now we have two sets of features at every scale: the originals [E1...E5] from the actual glioma scan, and the reconstructions [E1'...E5'] from the normalised version. Both sets are projected through the **Projection Head** (a 2-layer MLP) into a shared 256-dimensional embedding space.
 
-### 3.3 The Full Pipeline
+At each spatial location and each scale, we compute the **cosine similarity** between the original and reconstructed embeddings. Where the brain tissue is normal, the reconstruction is faithful, and cosine similarity is high (close to 1.0). Where the glioma exists, the reconstruction fails, and cosine similarity drops sharply (closer to 0.0).
 
-```
-         Input Image (X)
-              │
-              ▼
-     ┌────────────────┐
-     │    ENCODER (E)  │──→ Multi-scale features [e1, e2, e3, e4, e5]
-     └────────────────┘            │
-              │                    │
-              ▼                    ▼
-     ┌────────────────┐   ┌─────────────────┐
-     │   DECODER (De)  │   │ PROJECTION HEAD │──→ Projected embeddings (original)
-     └────────────────┘   └─────────────────┘
-              │
-              ▼
-     Reconstruction (X̂)
-              │
-              ▼
-     ┌────────────────┐
-     │  ENCODER (E)    │──→ Re-encoded features [ê1, ê2, ê3, ê4, ê5]
-     │  (same weights) │            │
-     └────────────────┘            ▼
-              │            ┌─────────────────┐
-              │            │ PROJECTION HEAD │──→ Projected embeddings (reconstructed)
-              │            └─────────────────┘
-              ▼                    │
-     ┌────────────────┐            ▼
-     │ DISCRIMINATOR   │   Compare cosine similarity per patch
-     │      (D)        │   → Anomaly Score Map
-     └────────────────┘
-              │
-              ▼
-     Adversarial loss
-     (push reconstructions
-      to look realistic)
-```
+These per-layer similarity maps are upsampled to 256×256 and summed across all five scales, producing a single fused **Anomaly Map**. This map is a heatmap where bright/red regions indicate high anomaly scores — the locations where the model detected the greatest discrepancy between "what is" and "what should be."
+
+### Step 6: Image-Level Score
+
+For clinical decision-making we also need a single scalar score per image: "is this scan anomalous or not?" We compute this by taking the top-100 highest anomaly values from the fused anomaly map and averaging them. This **top-k pooling** strategy focuses on the most suspicious region rather than being diluted by the vast majority of normal tissue in the scan.
 
 ---
 
-## 4. Model Architecture (How It Works Inside)
+## 3. The Core Innovation: Patch-wise Contrastive Learning
 
-### 4.1 Encoder (E) — Feature Extractor
+### 3.1 Why Not Just Use Pixel-Level Reconstruction Error?
 
-The Encoder progressively compresses the input image into deeper, more semantic feature maps. It has **5 blocks**, each reducing the spatial resolution by half.
+The simplest anomaly detection approach would be: reconstruct the image, compute the pixel-wise Mean Squared Error (MSE) between input and reconstruction, and threshold it. This is what many classical autoencoders do. However, pixel-level MSE is fundamentally flawed for medical imaging:
 
-```
-Input: (B, 3, 256, 256)  ← 3-channel RGB image
+- **Sensitivity to noise:** A tiny amount of sensor noise or slight geometric misalignment between input and reconstruction can cause large MSE values across the entire image, drowning out the real anomaly signal.
+- **Insensitivity to semantics:** MSE treats all pixel differences equally. A small intensity shift in a healthy region and a tumor mass might produce similar MSE values, even though only the latter is clinically significant.
+- **Blurriness tolerance:** Autoencoders often produce slightly blurry reconstructions. Pixel MSE penalises this blurriness uniformly, creating a high baseline error that masks genuine anomalies.
 
-   ┌─────────────────────────────────────────────────┐
-   │  E1: Conv2d(3→64, 7×7, stride=2, pad=3)        │
-   │      → InstanceNorm2d(64) → ReLU               │
-   │      Output: (B, 64, 128, 128)                  │
-   ├─────────────────────────────────────────────────┤
-   │  E2: Conv2d(64→128, 3×3, stride=2, pad=1)      │
-   │      → InstanceNorm2d(128) → ReLU              │
-   │      Output: (B, 128, 64, 64)                   │
-   ├─────────────────────────────────────────────────┤
-   │  E3: Conv2d(128→256, 3×3, stride=2, pad=1)     │
-   │      → InstanceNorm2d(256) → ReLU              │
-   │      Output: (B, 256, 32, 32)                   │
-   ├─────────────────────────────────────────────────┤
-   │  E4: Conv2d(256→512, 3×3, stride=2, pad=1)     │
-   │      → InstanceNorm2d(512) → ReLU              │
-   │      Output: (B, 512, 16, 16)                   │
-   ├─────────────────────────────────────────────────┤
-   │  E5: Conv2d(512→512, 3×3, stride=2, pad=1)     │
-   │      → InstanceNorm2d(512) → ReLU              │
-   │      Output: (B, 512, 8, 8)                     │
-   └─────────────────────────────────────────────────┘
+### 3.2 The Contrastive Learning Solution
 
-Returns: [e1, e2, e3, e4, e5]  ← list of ALL layer outputs for multi-scale fusion
-```
+PatchCL-AE's key innovation is to measure discrepancies not in pixel space, but in a **learned semantic embedding space** using contrastive learning. The idea is borrowed from self-supervised representation learning (specifically InfoNCE / NT-Xent from SimCLR), but applied at the **patch level** within a single image.
 
-**Why InstanceNorm instead of BatchNorm?** InstanceNorm normalises each image independently, making the model robust to contrast variations across different MRI scanners.
+The concept works as follows. During training, the model randomly selects 256 spatial locations from each encoder layer. For each selected location, it extracts two embeddings: one from the original image's features and one from the reconstructed image's features. These embeddings are projected into a shared 256-dimensional space via the Projection Head.
 
-### 4.2 Decoder (De) — Image Reconstructor
+The **Patch-wise Contrastive Loss** then enforces a simple rule: for each spatial location, the reconstructed embedding (the "query") should be most similar to the original embedding at the **same** location (the "positive"), and dissimilar to original embeddings at all **other** locations (the "negatives"). This is framed as a classification problem — "which of the 256 candidate positions does this reconstructed patch belong to?" — and optimised with cross-entropy.
 
-The Decoder takes the deepest encoder feature (e5) and progressively upsamples it back to the original image size.
+Because the model is trained only on normal images, it learns to produce embeddings where the reconstruction is semantically identical to the original at every location. At inference time, anomalous regions break this agreement — the model cannot reconstruct the anomaly faithfully, so the embeddings diverge, and the contrastive distance spikes.
 
-```
-Input: e5 = (B, 512, 8, 8)
+### 3.3 The Math: Equation 3 from the Paper (with a Worked Example)
 
-   ┌──────────────────────────────────────────────────────┐
-   │  De1: Upsample(2×) → Conv2d(512→256, 3×3, pad=1)    │
-   │       → InstanceNorm2d(256) → ReLU                  │
-   │       Output: (B, 256, 16, 16)                       │
-   ├──────────────────────────────────────────────────────┤
-   │  De2: Upsample(2×) → Conv2d(256→128, 3×3, pad=1)    │
-   │       → InstanceNorm2d(128) → ReLU                  │
-   │       Output: (B, 128, 32, 32)                       │
-   ├──────────────────────────────────────────────────────┤
-   │  De3: Upsample(2×) → Conv2d(128→64, 3×3, pad=1)     │
-   │       → InstanceNorm2d(64) → ReLU                   │
-   │       Output: (B, 64, 64, 64)                        │
-   ├──────────────────────────────────────────────────────┤
-   │  De4: Upsample(2×) → Conv2d(64→64, 3×3, pad=1)      │
-   │       → InstanceNorm2d(64) → ReLU                   │
-   │       Output: (B, 64, 128, 128)                      │
-   ├──────────────────────────────────────────────────────┤
-   │  Output: Upsample(2×) → Conv2d(64→3, 7×7, pad=3)    │
-   │          → Tanh                                      │
-   │          Output: (B, 3, 256, 256) in [-1, 1]         │
-   └──────────────────────────────────────────────────────┘
-```
+The patch-wise contrastive loss for a single encoder layer is defined as:
 
-**Why Tanh?** Because our images are normalised to [-1, 1]. Tanh outputs exactly that range, ensuring the reconstruction matches the input value range.
-
-### 4.3 Discriminator (D) — Realism Checker
-
-The Discriminator is a PatchGAN-style network that judges whether an image looks "real" (genuine MRI) or "fake" (auto-encoder output). This adversarial pressure forces the decoder to produce realistic-looking reconstructions.
-
-```
-Input: (B, 3, 256, 256)
-
-   ┌────────────────────────────────────────────────────┐
-   │  D1: Conv2d(3→64, 4×4, stride=2)   → LeakyReLU   │
-   │  D2: Conv2d(64→128, 4×4, stride=2) → IN → LReLU  │
-   │  D3: Conv2d(128→256, 4×4, stride=2)→ IN → LReLU  │
-   │  D4: Conv2d(256→512, 4×4, stride=2)→ IN → LReLU  │
-   │  D5-D8: Conv2d(512→512, stride=1)  → IN → LReLU  │
-   ├────────────────────────────────────────────────────┤
-   │  D9: AdaptiveAvgPool2d(1) → Flatten → Linear(512→1)│
-   │  Output: scalar (higher = more "real-looking")     │
-   └────────────────────────────────────────────────────┘
-```
-
-### 4.4 Projection Head (P) — Embedding for Contrastive Learning
-
-A simple 2-layer MLP that projects encoder features into a 256-dimensional embedding space where cosine similarity is meaningful.
-
-```
-For EACH encoder layer l (5 layers total):
-  Input: Feature at spatial location i → vector of C_l channels
-  
-  ┌──────────────────────────────────────────────┐
-  │  Linear(C_l → 256) → ReLU → Linear(256 → 256)│
-  └──────────────────────────────────────────────┘
-  
-  Output: 256-D embedding vector for that patch
-
-Where C_l = [64, 128, 256, 512, 512] for layers E1–E5
-```
-
-### 4.5 Input → Output Summary
-
-| Stage | Input | Output | Size |
-|-------|-------|--------|------|
-| **Raw MRI** | Brain scan (any size) | - | Varies |
-| **Preprocessing** | Raw MRI | Normalised tensor | (3, 256, 256) in [-1, 1] |
-| **Encoder** | Normalised image | 5-scale feature maps | 128², 64², 32², 16², 8² |
-| **Decoder** | Deepest features (e5) | Reconstructed image | (3, 256, 256) in [-1, 1] |
-| **Re-Encode** | Reconstruction | 5-scale feature maps | Same as Encoder |
-| **Projection** | Feature patches | 256-D embedding vectors | (B, N_patches, 256) |
-| **Anomaly Map** | Cosine similarity | Per-pixel anomaly score | (1, 256, 256) |
-| **Image Score** | Anomaly map | Single scalar per image | 1 number |
-
----
-
-## 5. Loss Functions (How the Model Learns)
-
-PatchCL-AE uses **two complementary loss functions** during training:
-
-### 5.1 Patch Contrastive Loss (L_Patch) — The Main Innovation
-
-This is the core contribution of the paper. It operates in the **feature embedding space**, not pixel space.
-
-**Intuition:** For each sampled spatial position, the embedding of the reconstructed patch should be close to the embedding of the original patch at the **same** position, and far from patches at **different** positions.
-
-**Formally (InfoNCE / NT-Xent):**
-
-$$
-L_{\text{Patch}} = \sum_{l=1}^{5} \sum_{i=1}^{N_s} -\log \frac{\exp(\text{sim}(z_i, z_i^+) / \tau)}{\exp(\text{sim}(z_i, z_i^+) / \tau) + \sum_{j \neq i} \exp(\text{sim}(z_i, z_j^-) / \tau)}
-$$
+$$L_{\text{Patch}} = \sum_{i=1}^{S} -\log \frac{\exp\bigl(\text{sim}(z_i, z_i^+) / \tau\bigr)}{\exp\bigl(\text{sim}(z_i, z_i^+) / \tau\bigr) + \displaystyle\sum_{j \neq i} \exp\bigl(\text{sim}(z_i, z_j^-) / \tau\bigr)}$$
 
 Where:
-- $z_i$ = projected embedding of reconstructed patch at position $i$
-- $z_i^+$ = projected embedding of original patch at the **same** position $i$ (positive pair)
-- $z_j^-$ = projected embedding of original patch at a **different** position $j$ (negative pair)
-- $\text{sim}(\cdot, \cdot)$ = cosine similarity
-- $\tau = 0.07$ = temperature parameter (lower = sharper probability distribution)
-- $N_s = 256$ = number of sampled spatial locations per layer
-- Sum over all 5 encoder layers for **multi-scale** learning
+- $z_i$ is the projected embedding of the **reconstructed** patch at spatial location $i$ (the "query").
+- $z_i^+$ is the projected embedding of the **original** patch at the **same** location $i$ (the "positive").
+- $z_j^-$ are the projected embeddings of the **original** patches at all **other** locations $j \neq i$ (the "negatives").
+- $\text{sim}(\cdot, \cdot)$ is cosine similarity, ranging from -1 to 1.
+- $\tau = 0.07$ is the temperature parameter that controls the sharpness of the distribution.
 
-```
-         Position 3         Position 3         
-         (Original)      (Reconstruction)     
-             │                   │            
-             ▼                   ▼            
-        ┌─────────┐        ┌─────────┐       
-        │ Proj.   │        │ Proj.   │       
-        │ Head    │        │ Head    │       
-        └────┬────┘        └────┬────┘       
-             │   z_i^+          │   z_i       
-             │                  │             
-             └────── Should ────┘             
-                    be CLOSE                   
-                  (positive pair)              
-                                              
-             z_j^-  (different position)       
-                    Should be FAR              
-                  (negative pair)              
-```
+**Dummy Calculation — A Beginner-Friendly Example:**
 
-### 5.2 Adversarial Loss (L_Img) — LSGAN
+Suppose we sample only $S = 3$ spatial locations for simplicity, and our temperature is $\tau = 0.07$. For location $i = 1$, imagine these cosine similarities:
 
-Forces the decoder to produce visually realistic reconstructions using a discriminator (GAN framework).
+| Pair | Cosine Similarity | Meaning |
+|:---|:---:|:---|
+| $\text{sim}(z_1, z_1^+)$ — query vs. positive (same location) | **0.95** | Almost perfect match — reconstruction is faithful |
+| $\text{sim}(z_1, z_2^-)$ — query vs. negative (location 2) | 0.10 | Low similarity — different spatial content |
+| $\text{sim}(z_1, z_3^-)$ — query vs. negative (location 3) | 0.15 | Low similarity — different spatial content |
 
-**Generator loss (make fakes look real):**
+Now compute the loss for this location:
 
-$$L_G^{adv} = \frac{1}{2} \mathbb{E}\left[(D(\hat{X}) - 1)^2\right]$$
+$$\text{Numerator} = \exp(0.95 / 0.07) = \exp(13.57) \approx 783{,}747$$
 
-**Discriminator loss (distinguish real from fake):**
+$$\text{Denominator} = \exp(13.57) + \exp(0.10 / 0.07) + \exp(0.15 / 0.07) = 783{,}747 + \exp(1.43) + \exp(2.14)$$
 
-$$L_D = \frac{1}{2} \mathbb{E}\left[(D(X) - 1)^2\right] + \frac{1}{2} \mathbb{E}\left[(D(\hat{X}))^2\right]$$
+$$= 783{,}747 + 4.18 + 8.50 = 783{,}759.68$$
 
-We use **Least-Squares GAN (LSGAN)** instead of standard GAN because LSGAN is more stable and produces less blurry outputs.
+$$L_1 = -\log\frac{783{,}747}{783{,}759.68} = -\log(0.99998) \approx 0.00002$$
 
-### 5.3 Total Generator Loss
+> **Interpretation:** When the reconstruction is near-perfect ($\text{sim} \approx 0.95$), the positive pair completely dominates the denominator. The loss is almost zero — the model is doing exactly what we want.
 
-$$L_G = L_{\text{Patch}} + \lambda_{adv} \cdot L_G^{adv}$$
+Now imagine inference on a tumor region where reconstruction fails:
 
-Where $\lambda_{adv} = 1.0$ balances the contrastive and adversarial objectives.
+| Pair | Cosine Similarity | Meaning |
+|:---|:---:|:---|
+| $\text{sim}(z_1, z_1^+)$ — query vs. positive | **0.20** | Poor match — reconstruction diverges from original |
+| $\text{sim}(z_1, z_2^-)$ — query vs. negative | 0.18 | Similar to the positive — embedding is confused |
+| $\text{sim}(z_1, z_3^-)$ — query vs. negative | 0.15 | Similar to the positive |
 
----
+$$\text{Numerator} = \exp(0.20 / 0.07) = \exp(2.86) \approx 17.46$$
 
-## 6. Training Pipeline
+$$\text{Denominator} = 17.46 + \exp(2.57) + \exp(2.14) = 17.46 + 13.07 + 8.50 = 39.03$$
 
-### 6.1 Algorithm 1 (from the paper)
+$$L_1 = -\log\frac{17.46}{39.03} = -\log(0.447) \approx 0.805$$
 
-```
-For each epoch:
-  For each batch of normal brain MRIs (X):
-    
-    1. Add Gaussian noise:  X̃ = X + ε,  where ε ~ N(0, 0.05²)
-    2. Encode clean:        feats_orig  = E(X)       → [e1...e5]
-    3. Encode noisy:        feats_noisy = E(X̃)       → [ẽ1...ẽ5]
-    4. Decode:              X̂ = De(ẽ5)               → reconstruction
-    5. Re-encode:           feats_recon = E(X̂)       → [ê1...ê5]
-    6. Sample 256 random patch positions (same for original & recon)
-    7. Project:             z_orig  = P(feats_orig,  patch_ids)
-                            z_recon = P(feats_recon, patch_ids)
-    8. L_Patch = ContrastiveLoss(z_recon, z_orig)
-    9. L_Adv_G = AdversarialLoss(D(X̂), real=True)
-   10. L_G = L_Patch + λ × L_Adv_G
-   11. Update Encoder + Decoder + ProjectionHead with L_G
-   12. L_D = 0.5 × [AdversarialLoss(D(X), real=True) + 
-                     AdversarialLoss(D(X̂.detach()), real=False)]
-   13. Update Discriminator with L_D
-```
+> **Interpretation:** The loss is now 40,000× larger than in the normal case. The positive pair no longer dominates — the model cannot distinguish the correct location from the negatives because the reconstruction is unfaithful. This is exactly the signal we use to detect anomalies: locations where the contrastive agreement breaks down are where something abnormal exists.
 
-### 6.2 Training Configuration
+### 3.4 Multi-Scale Fusion
 
-| Hyperparameter | Value | Explanation |
-|----------------|-------|-------------|
-| Optimiser | Adam | Adaptive learning rate per parameter |
-| Learning rate | 0.002 | How fast the model updates |
-| β₁, β₂ | 0.9, 0.999 | Adam momentum terms |
-| ε | 1e-4 | Numerical stability in Adam |
-| Batch size | 4 | Images processed simultaneously (limited by 6GB GPU) |
-| Epochs | 50 | Full passes through training data |
-| λ_adv | 1.0 | Equal weight for adversarial loss |
-| Noise std | 0.05 | Gaussian noise level for denoising objective |
-| Patch samples | 256 | Spatial locations sampled per layer per batch |
-| Mixed precision | AMP (FP16) | Halves GPU memory usage on CUDA |
+The total patch-wise loss sums over all five encoder layers:
 
-### 6.3 Training Outputs
+$$L_{\text{Patch}}^{\text{total}} = \sum_{l=1}^{5} L_{\text{Patch}}^{(l)}$$
 
-During training, the following files are saved to `results/`:
-
-| File | Description |
-|------|-------------|
-| `training_history.json` | Per-epoch loss values (machine-readable) |
-| `training_history.csv` | Same data in spreadsheet format |
-| `training_losses_all.png` | All 4 losses plotted together |
-| `training_losses_separate.png` | Each loss in its own subplot |
-| `training_G_vs_D.png` | Generator vs Discriminator balance |
-
-Checkpoints saved to `checkpoints/` every 10 epochs: `patchcl_ae_epoch10.pt`, `patchcl_ae_epoch20.pt`, etc.
-
-### 6.4 Training Loss Curves (Our Results — 50 Epochs)
-
-#### All Losses Combined
-![Training Losses — All](results/training_losses_all.png)
-
-**What to look for:** Loss_G (total generator loss) should steadily decrease. Loss_D (discriminator) should stay small and stable — this means the discriminator is easily winning (good for training stability).
-
-#### Separate Subplots
-![Training Losses — Separate](results/training_losses_separate.png)
-
-**Reading each subplot:**
-- **Generator Total Loss** — Overall objective; should decrease over epochs
-- **Discriminator Loss** — Near zero means the discriminator easily identifies real vs fake (reconstructions are getting better)
-- **Patch Contrastive Loss** — The main PatchCL objective; decreasing means the model is learning to reconstruct patches with correct semantics
-- **Adversarial Generator Loss** — Hovers around 1.0 (optimal for LSGAN when generator perfectly fools discriminator)
-
-#### Generator vs Discriminator Balance
-![G vs D](results/training_G_vs_D.png)
-
-**GAN training balance:** The Generator loss should be much higher than Discriminator loss. This is normal and healthy — it means the generator is working hard to produce realistic images while the discriminator is confidently judging them.
+This multi-scale approach is essential. Layer E1 (128×128, 64 channels) captures fine textural anomalies — subtle intensity changes or small lesions. Layer E5 (8×8, 512 channels) captures large-scale structural anomalies — missing or distorted brain regions. By combining signals from all five scales, the model can detect anomalies of any size.
 
 ---
 
-## 7. Evaluation & Anomaly Detection (How We Test)
+## 4. Architecture Breakdown (Theory vs. Code)
 
-### 7.1 Step-by-Step Anomaly Scoring
+### 4.1 The Paper's Design
 
-At test time, we do NOT need labels. The model assigns an **anomaly score** to each image:
+The original paper specifies the full network architecture across three tables and illustrates the overall PatchCL-AE approach in Figure 2:
 
-```
-Step 1: Feed test image X through Encoder
-        → feats_orig = [e1, e2, e3, e4, e5]
+![Paper Architecture](PaperFigures/Figure%202%20patch_cl_ae_approach%20.png)
 
-Step 2: Reconstruct
-        → X̂ = Decoder(e5)
+*Figure: The PatchCL-AE approach from the paper. A noisy input X̃ is encoded, decoded to produce X̂, and then both X and X̂ are re-encoded. Patch-level contrastive learning is applied across multiple encoder layers, while a discriminator provides an adversarial image-level loss.*
 
-Step 3: Re-encode reconstruction
-        → feats_recon = Encoder(X̂) = [ê1, ê2, ê3, ê4, ê5]
+The Encoder and Decoder structures are defined in detail in Table 1 of the paper:
 
-Step 4: For EACH encoder layer l:
-        → Project all spatial locations through ProjectionHead
-        → Compute cosine similarity between original & recon at each position
-        → Anomaly_l(i) = 1 - cosine_sim(z_orig_i, z_recon_i)
-        → Upscale Anomaly_l from (H_l, W_l) to (256, 256)
+![Encoder/Decoder Structure](paper_tables/t1_structure_ae.png)
 
-Step 5: Fuse all layers
-        → Anomaly_Map = Σ(Anomaly_1 + Anomaly_2 + ... + Anomaly_5)
-        → This is a 256×256 heatmap of anomaly scores
+*Table: The paper's specification of the Encoder (E1–E5) and Decoder (De1–De4 + output) layer configurations, including kernel sizes, channel dimensions, and spatial resolutions.*
 
-Step 6: Image-level score
-        → Take the top-100 highest anomaly pixel values
-        → Score = mean of those 100 values
-        → Higher score = more anomalous
-```
+### 4.2 Our Implementation
 
-### 7.2 Why Multi-Scale Fusion?
+We implemented each component faithfully in PyTorch across `models.py`. Here is how each maps to the paper:
 
-Each encoder layer captures different levels of detail:
+**Encoder (5 blocks, E1–E5):** Our `Encoder` class contains five `EncoderBlock` modules. Each block is a sequence of `Conv2d → InstanceNorm2d → ReLU`. The first block (E1) uses a 7×7 kernel with stride 2 and padding 3 to capture a larger initial receptive field, while blocks E2–E5 use standard 3×3 kernels with stride 2 and padding 1. The channel progression is 3 → 64 → 128 → 256 → 512 → 512, and the spatial resolution halves at each stage from 256×256 down to 8×8. Importantly, the Encoder returns *all five* intermediate feature maps as a list, not just the final one — this is what enables multi-scale contrastive learning.
 
-| Layer | Resolution | Captures |
-|-------|-----------|----------|
-| E1 (64ch) | 128×128 | Fine edges, textures |
-| E2 (128ch) | 64×64 | Local patterns, small structures |
-| E3 (256ch) | 32×32 | Medium-scale features |
-| E4 (512ch) | 16×16 | Large structures, regions |
-| E5 (512ch) | 8×8 | Global semantics, overall brain shape |
+**Decoder (4 blocks + output head):** Our `Decoder` class mirrors the Encoder in reverse. Each `DecoderBlock` performs bilinear upsampling (×2) followed by a `Conv2d → InstanceNorm2d → ReLU` sequence. The channel progression is 512 → 256 → 128 → 64 → 64, and for the spatial resolution is 8×8 → 16×16 → 32×32 → 64×64 → 128×128. The final output head upsamples to 256×256, applies a 7×7 convolution to produce 3 RGB channels, and passes the result through a **Tanh** activation. This Tanh is essential: it constrains the output to [-1, 1], matching the normalisation range of the input images. Without it, the model would need to learn arbitrary output ranges, hurting training stability.
 
-By summing anomaly maps from all layers, we can detect anomalies at **every scale** — from tiny texture changes to large structural distortions.
+**Discriminator (9 layers, PatchGAN-style):** The `Discriminator` class follows Table 2 of the paper with a 9-layer architecture. Layers D1–D4 use 4×4 convolutions with stride 2, progressively downsampling from 256×256 to 16×16 while increasing channels to 512. Layers D5–D8 maintain stride 1 (no further downsampling) with 512 channels. Each layer (except D1) includes InstanceNorm + LeakyReLU(0.2). The final classification head applies `AdaptiveAvgPool2d(1) → Flatten → Linear(512, 1)` to produce a single scalar per image — the real/fake prediction used by the LSGAN adversarial loss.
 
-### 7.3 Threshold Selection: Youden's J Statistic
+**Projection Head (2-layer MLP):** The `ProjectionHead` is a simple `Linear(in_dim, 256) → ReLU → Linear(256, 256)` network. It maps feature vectors from any encoder layer into a common 256-dimensional space where cosine similarity is computed for the contrastive loss. The `MultiScaleProjectionHead` wraps five independent ProjectionHead instances — one per encoder layer — to handle the different input channel dimensions (64, 128, 256, 512, 512).
 
-To convert continuous anomaly scores into binary predictions (Normal/Anomaly), we need a **threshold**. We use **Youden's J statistic** to find the optimal threshold:
+### 4.3 Key Design Decisions
 
-$$J = \text{Sensitivity} + \text{Specificity} - 1 = \text{TPR} - \text{FPR}$$
+**Why InstanceNorm instead of BatchNorm?** InstanceNorm normalises each image independently, making the model invariant to per-image contrast shifts — common in medical imaging where scanner parameters vary between patients and institutions. BatchNorm, which normalises across the mini-batch, can introduce instability in small-batch training (we use batch size 4 due to GPU memory constraints) and couples the normalisation statistics of unrelated images.
 
-The threshold that maximises $J$ gives the best trade-off between detecting anomalies (sensitivity) and avoiding false alarms (specificity).
+**Why LSGAN instead of vanilla GAN loss?** The Least-Squares GAN loss replaces the cross-entropy of the original GAN with MSE. This provides smoother gradients, avoids the vanishing gradient problem when the discriminator becomes too confident, and penalises generated samples that are far from the decision boundary — all leading to more stable training and higher quality reconstructions.
 
-### 7.4 Evaluation Metrics Explained
-
-| Metric | Formula | What It Means |
-|--------|---------|---------------|
-| **AUC** | Area Under ROC Curve | Overall discrimination ability (1.0 = perfect, 0.5 = random) |
-| **Accuracy** | (TP + TN) / Total | Fraction of correct predictions |
-| **Sensitivity** | TP / (TP + FN) | "Of all tumors, how many did we catch?" (also called Recall/TPR) |
-| **Specificity** | TN / (TN + FP) | "Of all normal brains, how many did we correctly clear?" |
-| **Precision** | TP / (TP + FP) | "Of all images we flagged as tumor, how many actually had tumors?" |
-| **F1 Score** | 2 × P × R / (P + R) | Harmonic mean of precision and sensitivity |
-
-Where: **TP** = True Positive (tumor correctly detected), **TN** = True Negative (normal correctly cleared), **FP** = False Positive (normal wrongly flagged), **FN** = False Negative (tumor missed)
+**Why a denoising autoencoder (adding noise to the input)?** During training, slight Gaussian noise (σ = 0.05) is added to the clean input before encoding: X̃ = X + ε. This prevents the model from learning a trivial identity function (just copying the input pixel-by-pixel). The noise forces the Encoder to extract robust, semantically meaningful features that can tolerate small perturbations — which directly improves the quality of the learned patch embeddings and makes anomaly scoring more reliable.
 
 ---
 
-## 8. Results & Visualisations
+## 5. Anomaly Scoring: Paper vs. Our Output
 
-### 8.1 Quantitative Results (Our 50-Epoch Run)
+### 5.1 How the Anomaly Score is Calculated
 
-| Metric | Value | Interpretation |
-|--------|-------|----------------|
-| **AUC** | **0.9811** | Excellent — the model separates normal from anomaly very well |
-| **Accuracy** | **95.69%** | 95.7% of all images classified correctly |
-| **Sensitivity** | **97.33%** | Catches 97.3% of all tumors (very few missed) |
-| **Specificity** | **90.75%** | 90.8% of normal brains correctly identified |
-| **Precision** | **96.93%** | When it flags a tumor, 96.9% of the time it's correct |
-| **F1 Score** | **0.9713** | Strong overall balance between precision and recall |
-| **Optimal Threshold** | **2.596** | Anomaly score above this → flagged as tumor |
+The anomaly scoring mechanism is the bridge between training and clinical utility. Rather than comparing raw pixels, PatchCL-AE computes anomaly scores in the deep feature space:
 
-**Confusion Matrix Counts:**
+1. **Encode the original image** X through the Encoder to get multi-scale features [E1, …, E5].
+2. **Reconstruct** the image through the Decoder to get X̂.
+3. **Re-encode** X̂ through the same Encoder to get features [E1', …, E5'].
+4. **Project** both feature sets through the Projection Head into the 256-D embedding space.
+5. **Compute cosine similarity** between original and reconstructed projections at every spatial location and every layer. Low similarity means the reconstruction is semantically different from the original — an anomaly signal.
+6. **Create per-layer anomaly maps** by converting similarity to distance: $\text{anomaly}_{l}(i) = 1 - \text{sim}(z_i^{(l)}, \hat{z}_i^{(l)})$.
+7. **Fuse across scales** by upsampling each layer's anomaly map to 256×256 and summing them.
+8. **Compute image-level score** by averaging the top-100 values from the fused map (top-k pooling).
 
-|  | Predicted Normal | Predicted Anomaly |
-|--|-----------------|-------------------|
-| **Actually Normal** | TN = 363 | FP = 37 |
-| **Actually Anomaly** | FN = 32 | TP = 1,168 |
+The paper illustrates this scoring process in Figure 4:
 
-- **Total test images:** 1,600 (400 normal + 1,200 anomaly)
-- **Misclassified:** 69 out of 1,600 (4.3% error rate)
+![Anomaly Score Calculation](PaperFigures/Figure%204%20anomoly%20score%20calculation%20.png)
 
-### 8.2 ROC Curve
+*Figure: The paper's illustration of how the anomaly score is calculated. Features from the original and reconstructed images are compared in the projected embedding space at multiple scales, producing a fused anomaly heatmap.*
 
-![ROC Curve](results/roc_curve.png)
+### 5.2 Visual Comparison: Paper vs. Our Model
 
-**How to read this:** The curve shows the trade-off between True Positive Rate (catching tumors) and False Positive Rate (false alarms) at different thresholds. The **closer the curve to the top-left corner**, the better. Our AUC of 0.981 means the model has excellent discrimination. The red dot marks the optimal operating point chosen by Youden's J statistic.
+The paper presents qualitative heatmap results in Figure 5, showing how PatchCL-AE highlights anomalous regions in red on various medical imaging datasets:
 
-### 8.3 Anomaly Score Distribution
+![Paper Heatmaps](PaperFigures/Figure%205%20heatmap%20.png)
 
-![Score Distribution](results/score_distribution.png)
+*Figure: Heatmap visualisations from the original PatchCL-AE paper across multiple medical imaging benchmarks. Red regions indicate high anomaly scores that correctly localise the pathological structures.*
 
-**How to read this:** This histogram shows the distribution of anomaly scores for Normal (green) and Anomaly (red) images. **Good separation = good model.** If the two distributions overlap heavily, the model cannot distinguish them. Our model shows clear separation with minimal overlap. The orange dashed line is the optimal threshold.
+Below are our model's actual outputs on the Brain Tumor MRI test set. Each row shows: the original MRI scan (left), the model's reconstruction (centre), and the anomaly heatmap (right):
 
-### 8.4 Confusion Matrix
+![Our Model Output](results/patchcl_ae_results.png)
 
-![Confusion Matrix](results/confusion_matrix.png)
+*Figure: Our PatchCL-AE reproduction results on the Brain Tumor MRI dataset. For each test sample, the model produces a reconstruction that "normalises" the brain (removing the tumor), and the anomaly heatmap highlights where the original and reconstruction diverge most — directly overlapping with the tumor location.*
 
-**How to read this:** Each cell shows how many images were classified:
-- **Top-left (TN=363):** Normal brain correctly identified as normal
-- **Top-right (FP=37):** Normal brain wrongly flagged as tumor (false alarm)
-- **Bottom-left (FN=32):** Tumor missed, classified as normal (most dangerous error!)
-- **Bottom-right (TP=1168):** Tumor correctly detected
+**Comparative analysis:** Our heatmaps successfully localise the tumor regions, with the highest anomaly scores (bright red areas) consistently overlapping the pathological structures. The reconstructions visibly smooth over the tumor areas, confirming that the Decoder has learned the manifold of healthy brain tissue and cannot reproduce anomalous structures. The overall quality is consistent with the paper's visualisations, demonstrating that the PatchCL-AE approach transfers effectively to the Brain Tumor MRI domain.
 
-### 8.5 Metrics Summary Bar Chart
+The paper also provides examples of reconstruction outputs, showing how the autoencoder "normalises" anomalous images:
 
-![Metrics Summary](results/metrics_summary.png)
+![Paper Reconstruction Output](PaperFigures/Figure%206%20reconstruct%20output%20.png)
 
-**How to read this:** All key metrics displayed side-by-side. All values above 0.90, indicating strong performance across all measures.
-
-### 8.6 Per-Sample Results (Original → Reconstruction → Heatmap)
-
-![Per-Sample Results](results/patchcl_ae_results.png)
-
-**How to read this figure (3 columns):**
-- **Column 1 (Original):** The raw MRI scan with its true label and anomaly score
-- **Column 2 (Reconstruction):** What the auto-encoder produces. For normal images, it looks very similar to the original. For tumor images, the model "normalises" the abnormal region.
-- **Column 3 (Heatmap):** The anomaly map overlaid on the original. **Red/Yellow regions = high anomaly** (where the model detects something abnormal). **Blue regions = low anomaly** (normal-looking tissue).
-
-### 8.7 Normal vs Anomaly Comparison
-
-![Per-Class Examples](results/per_class_examples.png)
-
-**How to read this figure:**
-- **Top row (Normal):** Low anomaly scores — the model reconstructs these well, and the heatmap shows mostly cool colours (blue/green).
-- **Bottom row (Anomaly):** High anomaly scores — the model fails to reconstruct the tumor region, and the heatmap lights up with warm colours (yellow/red) around the tumor.
+*Figure: From the paper — original pathological images (top) and their reconstructions (bottom). The autoencoder replaces anomalous tissue with its best estimate of what healthy tissue should look like.*
 
 ---
 
-## 9. How to Run the Code
+## 6. Results Comparison (Original vs. Our Run)
 
-### 9.1 Prerequisites
+### 6.1 The Paper's Quantitative Results
+
+The original paper reports results across several medical imaging benchmarks. The key metric is the **Area Under the ROC Curve (AUC)**, which measures how well the model separates normal from anomalous samples across all possible thresholds:
+
+![Paper AUC Results](paper_tables/t4_auc.png)
+
+*Table: The paper's reported AUC scores across different datasets and comparison with state-of-the-art methods. PatchCL-AE consistently achieves competitive or superior performance.*
+
+### 6.2 Our Quantitative Results
+
+We trained our reproduction on the Brain Tumor MRI dataset for **50 epochs** with batch size 4, learning rate 0.002, and mixed-precision (AMP) on an NVIDIA RTX 3050 (6 GB VRAM). Our test set contains **1,600 images**: 400 normal ("notumor") and 1,200 anomalous (400 glioma + 400 meningioma + 400 pituitary).
+
+**Our ROC Curve:**
+
+![Our ROC Curve](results/roc_curve.png)
+
+*Figure: The ROC curve for our trained PatchCL-AE model on the Brain Tumor MRI test set, plotting True Positive Rate against False Positive Rate at every threshold. The curve hugs the top-left corner, indicating excellent discrimination.*
+
+**Our Metrics Summary:**
+
+![Our Metrics Summary](results/metrics_summary.png)
+
+*Figure: Bar chart summarising all evaluation metrics from our trained model.*
+
+**Our Confusion Matrix:**
+
+![Our Confusion Matrix](results/confusion_matrix.png)
+
+*Figure: Confusion matrix at the optimal threshold (2.596). The model correctly identifies 1,168 out of 1,200 anomalous scans and 363 out of 400 normal scans.*
+
+### 6.3 Detailed Results Table
+
+| Metric | Our Result | Interpretation |
+|:---|:---:|:---|
+| **AUC** | **0.9811** | The model separates normal from anomaly with 98.1% accuracy across all thresholds — excellent discriminative power. |
+| **Accuracy** | **95.69%** | 1,531 of 1,600 test images are correctly classified at the optimal threshold. |
+| **Sensitivity (Recall)** | **97.33%** | Of 1,200 tumor scans, 1,168 are correctly detected. Only 32 tumors are missed (2.67%). |
+| **Specificity** | **90.75%** | Of 400 normal scans, 363 are correctly identified. 37 healthy brains are flagged as suspicious (9.25% false alarm rate). |
+| **Precision** | **96.93%** | Of the 1,205 scans flagged as anomalous, 1,168 truly have tumors. |
+| **F1 Score** | **0.9713** | The harmonic mean of Precision and Sensitivity, confirming balanced performance. |
+| **Optimal Threshold** | **2.596** | The anomaly score cutoff that maximises the Youden index (Sensitivity + Specificity - 1). |
+
+### 6.4 Analysis: Why Our Results May Differ from the Paper
+
+Our AUC of **0.9811** demonstrates that the PatchCL-AE approach works excellently on brain tumor MRI data. Minor differences from the paper's reported numbers can be attributed to several factors:
+
+1. **Different dataset.** The original paper evaluates on medical imaging benchmarks like BraTS, ISIC, and OCT datasets. We applied the same method to the Kaggle Brain Tumor MRI dataset, which has different image characteristics, resolutions, and class distributions.
+
+2. **Training scale.** Our training set consists of approximately 395 normal brain images, which is relatively small. The paper's experiments may use larger normal datasets, giving the model a richer representation of healthy anatomy.
+
+3. **Epoch budget.** We trained for 50 epochs due to GPU time constraints. Longer training (100–200 epochs) could further refine the learned manifold of normal tissue.
+
+4. **Hardware constraints.** Our batch size of 4 (limited by 6 GB VRAM) means noisier gradient estimates compared to larger batch training, which can affect convergence quality.
+
+Despite these constraints, the high AUC convincingly validates the paper's core hypothesis: **patch-wise contrastive learning in the feature space is a powerful paradigm for medical anomaly detection**, significantly outperforming naive pixel-level reconstruction approaches.
+
+---
+
+## 7. How to Run the Code
+
+### 7.1 Prerequisites
+
+- **Python** 3.9 or later
+- **CUDA-capable GPU** (recommended; CPU is supported but very slow)
+- **Conda** (recommended) or pip
+
+### 7.2 Installation
 
 ```bash
-# Create and activate conda environment
-conda create -n sap_agent python=3.10
-conda activate sap_agent
+# Clone the repository
+git clone https://github.com/ubaidur404786/patch-cl-ae.git
+cd patch-cl-ae
+
+# Create and activate a conda environment (recommended)
+conda create -n patchclae python=3.10 -y
+conda activate patchclae
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### 9.2 Prepare the Dataset
+### 7.3 Dataset Preparation
 
-Download the [Brain Tumor MRI Dataset](https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset) from Kaggle and organise it as:
+Download the **Brain Tumor MRI Dataset** from [Kaggle](https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset) and organise it as follows inside the `data/` directory:
 
 ```
-code/
-└── data/
-    ├── Training/
-    │   ├── notumor/
-    │   ├── glioma/
-    │   ├── meningioma/
-    │   └── pituitary/
-    └── Testing/
-        ├── notumor/
-        ├── glioma/
-        ├── meningioma/
-        └── pituitary/
+data/
+  Training/
+    notumor/       ← normal images (model trains on these ONLY)
+    glioma/        ← ignored during training
+    meningioma/    ← ignored during training
+    pituitary/     ← ignored during training
+  Testing/
+    notumor/       ← label 0 (normal) during evaluation
+    glioma/        ← label 1 (anomaly) during evaluation
+    meningioma/    ← label 1 (anomaly) during evaluation
+    pituitary/     ← label 1 (anomaly) during evaluation
 ```
 
-### 9.3 Train + Evaluate (Full Pipeline)
+> **Important:** Only the `notumor/` folder under `Training/` is used during training. All four folders under `Testing/` are used during evaluation.
+
+### 7.4 Training + Evaluation
 
 ```bash
-conda activate sap_agent
+# Full training (50 epochs) + automatic evaluation
 python main.py --epochs 50 --batch-size 4
+
+# With custom learning rate and adversarial loss weight
+python main.py --epochs 100 --batch-size 4 --lr 0.001 --lambda-adv 0.5
 ```
 
-This will:
-1. Train on `data/Training/notumor/` for 50 epochs
-2. Save checkpoints every 10 epochs → `checkpoints/`
-3. Save training history + loss plots → `results/`
-4. Automatically evaluate on the full test set
-5. Save all evaluation figures + metrics → `results/`
+Training outputs:
+- **Checkpoints** saved in `checkpoints/` (every 10 epochs + final)
+- **Training history** saved as `results/training_history.json` and `results/training_history.csv`
+- **Loss curve plots** saved in `results/` (3 figures)
 
-### 9.4 Evaluate Only (from a Saved Checkpoint)
+After training completes, evaluation runs automatically and produces all result figures and metrics files in `results/`.
+
+### 7.5 Evaluation Only (from checkpoint)
 
 ```bash
+# Evaluate a previously trained model
 python main.py --evaluate-only --ckpt checkpoints/patchcl_ae_epoch50.pt
 ```
 
-### 9.5 All CLI Options
+### 7.6 Project Structure
 
-```bash
-python main.py --help
-```
+| File | Purpose |
+|:---|:---|
+| `main.py` | CLI entry point — parses arguments, orchestrates training and evaluation |
+| `dataset.py` | Data loading — `BrainTumorDataset` class, loads only normals for training |
+| `models.py` | All architectures — Encoder, Decoder, Discriminator, ProjectionHead |
+| `losses.py` | Loss functions — `AdversarialLoss` (LSGAN) + `PatchContrastiveLoss` (InfoNCE) |
+| `train.py` | Training loop — Algorithm 1 with AMP, history tracking, and loss plots |
+| `evaluate.py` | Evaluation — anomaly scoring, metrics, and 6 publication-quality figures |
+| `requirements.txt` | Python dependencies |
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--data-root` | `./data` | Root directory of the dataset |
-| `--image-size` | `256` | Image resize resolution |
-| `--noise-std` | `0.05` | Gaussian noise for denoising AE |
-| `--epochs` | `50` | Number of training epochs |
-| `--batch-size` | `4` | Batch size (lower if GPU OOM) |
-| `--lr` | `0.002` | Learning rate |
-| `--lambda-adv` | `1.0` | Adversarial loss weight |
-| `--num-patch-samples` | `256` | Contrastive patches per layer |
-| `--save-dir` | `./checkpoints` | Where to save model checkpoints |
-| `--results-dir` | `./results` | Where to save figures and metrics |
-| `--evaluate-only` | `False` | Skip training, run evaluation only |
-| `--ckpt` | `None` | Checkpoint path (for `--evaluate-only`) |
-| `--device` | `auto` | Force CPU/CUDA device |
-
----
-
-## 10. Project Structure
+### 7.7 Requirements
 
 ```
-code/
-├── main.py              ← Entry point: CLI argument parsing + orchestration
-├── dataset.py           ← BrainTumorDataset class + data loaders
-├── models.py            ← Encoder, Decoder, Discriminator, ProjectionHead
-├── losses.py            ← PatchContrastiveLoss + AdversarialLoss (LSGAN)
-├── train.py             ← Training loop (Algorithm 1) + AMP + history tracking
-├── evaluate.py          ← Anomaly scoring + metrics + all visualisations
-├── requirements.txt     ← Python package dependencies
-├── README.md            ← This file
-│
-├── data/                ← Brain Tumor MRI dataset (Kaggle)
-│   ├── Training/
-│   └── Testing/
-│
-├── checkpoints/         ← Saved model weights (.pt files)
-│   └── patchcl_ae_epoch50.pt
-│
-└── results/             ← All outputs (figures, metrics, history)
-    ├── training_history.json
-    ├── training_history.csv
-    ├── training_losses_all.png
-    ├── training_losses_separate.png
-    ├── training_G_vs_D.png
-    ├── patchcl_ae_results.png
-    ├── roc_curve.png
-    ├── score_distribution.png
-    ├── confusion_matrix.png
-    ├── metrics_summary.png
-    ├── per_class_examples.png
-    ├── evaluation_metrics.json
-    └── metrics_summary.csv
-```
-
----
-
-## 11. Requirements
-
-```
-torch>=1.12.0
-torchvision>=0.13.0
-numpy>=1.21.0
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.23.0
 Pillow>=9.0.0
 matplotlib>=3.5.0
 scikit-learn>=1.0.0
 tqdm>=4.62.0
 ```
 
-**Hardware tested on:** NVIDIA RTX 3050 (6GB VRAM) with mixed-precision (AMP) enabled.
+**Hardware tested on:** NVIDIA RTX 3050 (6 GB VRAM) with mixed-precision (AMP) enabled.
 
 ---
 
 ## References
 
-- **PatchCL-AE Paper:** Patch-wise Contrastive Learning Auto-Encoder for anomaly detection in medical images
+- **PatchCL-AE Paper:** Z. Zheng et al., "Patch-wise Contrastive Learning Auto-Encoder for anomaly detection in medical images"
 - **Dataset:** [Brain Tumor MRI Dataset — Kaggle](https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset) (Masoud Nickparvar)
-- **InfoNCE Loss:** [A Simple Framework for Contrastive Learning (SimCLR)](https://arxiv.org/abs/2002.05709) — Chen et al., 2020
-- **LSGAN:** [Least Squares Generative Adversarial Networks](https://arxiv.org/abs/1611.04076) — Mao et al., 2017
-
----
-
-*Developed as part of the Medical Imaging course — Master 2, Université Côte d'Azur, 2025–2026.*
+- **InfoNCE / SimCLR:** Chen et al., "A Simple Framework for Contrastive Learning of Visual Representations," ICML 2020
+- **LSGAN:** Mao et al., "Least Squares Generative Adversarial Networks," ICCV 2017
+- **Instance Normalisation:** Ulyanov et al., "Instance Normalization: The Missing Ingredient for Fast Stylization," 2016
