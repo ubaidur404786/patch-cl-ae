@@ -1,0 +1,14 @@
+Metric,Value
+auc,0.981058
+accuracy,0.956875
+sensitivity,0.973333
+specificity,0.907500
+precision,0.969295
+f1,0.971310
+threshold,2.595711
+tp,1168
+tn,363
+fp,37
+fn,32
+total_normal,400
+total_anomaly,1200
